@@ -634,6 +634,11 @@ ve.init.mw.ArticleTarget.prototype.saveFail = function ( doc, saveData, wasRetry
 		return;
 	}
 
+  if ( editApi && editApi.captcha && editApi.captcha.type === 'recaptchanocaptcha' ) {
+    this.saveErrorRecaptcha( editApi );
+    return;
+  }
+
 	// Handle (other) unknown and/or unrecoverable errors
 	this.saveErrorUnknown( editApi, data );
 };
@@ -856,6 +861,40 @@ ve.init.mw.ArticleTarget.prototype.saveErrorCaptcha = function ( editApi ) {
 
 	this.emit( 'saveErrorCaptcha' );
 };
+
+ve.init.mw.ArticleTarget.prototype.saveErrorRecaptcha = function ( editApi ) {
+  var target = this;
+  var captchaId = '#g-recaptcha-response';
+  var containerId = 've-recaptcha-response';
+  var siteKey = window.mediaWiki.config.values.wgVisualEditorConfig.reCaptchaSiteKey;
+  var script =  '<script src="https://www.google.com/recaptcha/api.js?onload=onRecaptchaLoadCallback&render=explicit"></script>';
+  var $div = $( '<div id="' + containerId + '">' );
+
+   function onRecaptchaLoadCallback () {
+    target.saveDialog.showMessage( 'api-save-error', $div );
+
+    grecaptcha.render( containerId, {
+      'sitekey': siteKey,
+      'callback': function (response) {
+        target.captcha = {
+          input: $(captchaId),
+          id: captchaId,
+        };
+
+        target.saveDialog.executeAction( 'save' );
+      },
+      'expired-callback': function () {},
+      'error-callback': function () {},
+    } );
+
+    target.saveDialog.updateSize();
+    target.emit( 'saveErrorCaptcha' );
+  };
+
+  window.onRecaptchaLoadCallback = onRecaptchaLoadCallback;
+  $(document.head).append( script );
+}
+
 
 /**
  * Handle page deleted error
@@ -1518,7 +1557,9 @@ ve.init.mw.ArticleTarget.prototype.getSaveFields = function () {
 		fields = {
 			wpSummary: this.saveDialog ? this.saveDialog.editSummaryInput.getValue() : ( this.editSummaryValue || this.initialEditSummary ),
 			wpCaptchaId: this.captcha && this.captcha.id,
-			wpCaptchaWord: this.captcha && this.captcha.input.getValue()
+			wpCaptchaWord: this.captcha
+      ? this.captcha.input instanceof jQuery ? this.captcha.input.val() : this.captcha.input.getValue()
+      : null
 		};
 	if ( this.recreating ) {
 		fields.wpRecreate = true;
@@ -1557,7 +1598,7 @@ ve.init.mw.ArticleTarget.prototype.getSaveOptions = function () {
 			wpMinoredit: 'minor',
 			wpWatchthis: 'watch',
 			wpCaptchaId: 'captchaid',
-			wpCaptchaWord: 'captchaword'
+			wpCaptchaWord: this.captcha && this.captcha.id.indexOf('recaptcha') !== -1 ? 'g-recaptcha-response' : 'captchaword',
 		};
 
 	for ( key in fieldMap ) {
