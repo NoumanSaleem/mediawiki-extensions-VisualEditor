@@ -69,6 +69,8 @@ ve.init.mw.ArticleTarget = function VeInitMwArticleTarget( config ) {
 	this.preparedCacheKeyPromise = null;
 	this.clearState();
 
+	this.reCaptchaSubmitted = false;
+
 	// Initialization
 	this.$element.addClass( 've-init-mw-articleTarget' );
 };
@@ -307,7 +309,7 @@ ve.init.mw.ArticleTarget.prototype.loadSuccess = function ( response ) {
 				this.loadFail(
 					've-api',
 					'Revision IDs (doc=' + docRevId + ',api=' + this.revid + ') ' +
-						'returned by server do not match'
+					'returned by server do not match'
 				);
 			} else {
 				this.retriedRevIdConflict = true;
@@ -634,6 +636,11 @@ ve.init.mw.ArticleTarget.prototype.saveFail = function ( doc, saveData, wasRetry
 		return;
 	}
 
+	if ( editApi && editApi.captcha && editApi.captcha.type === 'recaptchanocaptcha' ) {
+		this.saveErrorRecaptcha( editApi );
+		return;
+	}
+
 	// Handle (other) unknown and/or unrecoverable errors
 	this.saveErrorUnknown( editApi, data );
 };
@@ -794,7 +801,9 @@ ve.init.mw.ArticleTarget.prototype.saveErrorCaptcha = function ( editApi ) {
 	} );
 
 	this.captcha = {
-		input: captchaInput,
+		value: function () {
+			return captchaInput.getValue();
+		},
 		id: captchaData.id
 	};
 	$captchaDiv.append( $captchaParagraph );
@@ -811,7 +820,7 @@ ve.init.mw.ArticleTarget.prototype.saveErrorCaptcha = function ( editApi ) {
 		$captchaDiv.addClass( 'fancycaptcha-captcha-container' );
 		$captchaParagraph.append(
 			$( $.parseHTML( mw.message( 'fancycaptcha-edit' ).parse() ) )
-				.filter( 'a' ).attr( 'target', '_blank' ).end()
+			.filter( 'a' ).attr( 'target', '_blank' ).end()
 		);
 		$captchaImg = $( '<img>' )
 			.attr( 'src', captchaData.url )
@@ -856,6 +865,79 @@ ve.init.mw.ArticleTarget.prototype.saveErrorCaptcha = function ( editApi ) {
 
 	this.emit( 'saveErrorCaptcha' );
 };
+
+ve.init.mw.ArticleTarget.prototype.getRecaptchaScript = function ( ) {
+	var deferred, config, scriptURL, params;
+
+	if ( !this.readyPromise ) {
+		deferred = $.Deferred();
+		config = mw.config.get( 'wgConfirmEditConfig' );
+		scriptURL = new mw.Uri( config.reCaptchaScriptURL );
+
+		if ( config.reCaptchaVersion === "v3" ) {
+			params = { onload: 'onRecaptchaLoadCallback', render: config.reCaptchaSiteKey };
+		} else {
+			params = { onload: 'onRecaptchaLoadCallback', render: 'explicit' };
+		}
+		scriptURL.query = $.extend( scriptURL.query, params );
+
+		this.readyPromise = deferred.promise();
+		window.onRecaptchaLoadCallback = deferred.resolve;
+		mw.loader.load( scriptURL.toString() );
+	}
+
+	return this.readyPromise;
+}
+
+ve.init.mw.ArticleTarget.prototype.saveErrorRecaptcha = function ( editApi ) {
+	var target = this;
+	var captchaId = '#g-recaptcha-response';
+	var $container = $( '<div>' );
+	var config = mw.config.get( 'wgConfirmEditConfig' );
+
+	this.getRecaptchaScript()
+		.then( function () {
+			if ( config.reCaptchaVersion === 'v3' ) {
+				if ( target.reCaptchaSubmitted ) {
+					target.saveDialog.showMessage( 'api-save-error', 'Your edit could not be verified at this time. Please log in and try again' );
+				} else {
+					grecaptcha.execute( config.reCaptchaSiteKey, { action: 'edit' } ).then( function ( token ) {
+						target.captcha = {
+							value: function () {
+								return token;
+							},
+							id: captchaId,
+						};
+
+						target.reCaptchaSubmitted = true;
+						target.saveDialog.executeAction( 'save' );
+					} );
+				}
+			} else {
+				target.saveDialog.showMessage( 'api-save-error', $container );
+
+				grecaptcha.render( $container[ 0 ], {
+					'sitekey': config.reCaptchaSiteKey,
+					'callback': function (response) {
+						target.captcha = {
+							value: function () {
+								return $( captchaId );
+							},
+							id: captchaId,
+						};
+
+						target.saveDialog.executeAction( 'save' );
+					},
+					'expired-callback': function () {},
+					'error-callback': function () {},
+				} );
+
+				target.saveDialog.updateSize();
+			}
+
+			target.emit( 'saveErrorCaptcha' );
+		} );
+}
 
 /**
  * Handle page deleted error
@@ -1146,7 +1228,7 @@ ve.init.mw.ArticleTarget.prototype.deflateHtml = function ( newDoc ) {
  *
  * @param {jQuery.Promise} [dataPromise] Promise for pending request, if any
  * @return {boolean} Loading has been started
-*/
+ */
 ve.init.mw.ArticleTarget.prototype.load = function ( dataPromise ) {
 	// Prevent duplicate requests
 	if ( this.loading ) {
@@ -1518,7 +1600,7 @@ ve.init.mw.ArticleTarget.prototype.getSaveFields = function () {
 		fields = {
 			wpSummary: this.saveDialog ? this.saveDialog.editSummaryInput.getValue() : ( this.editSummaryValue || this.initialEditSummary ),
 			wpCaptchaId: this.captcha && this.captcha.id,
-			wpCaptchaWord: this.captcha && this.captcha.input.getValue()
+			wpCaptchaWord: this.captcha && this.captcha.value()
 		};
 	if ( this.recreating ) {
 		fields.wpRecreate = true;
@@ -1557,7 +1639,7 @@ ve.init.mw.ArticleTarget.prototype.getSaveOptions = function () {
 			wpMinoredit: 'minor',
 			wpWatchthis: 'watch',
 			wpCaptchaId: 'captchaid',
-			wpCaptchaWord: 'captchaword'
+			wpCaptchaWord: this.captcha && this.captcha.id.indexOf('recaptcha') !== -1 ? 'g-recaptcha-response' : 'captchaword',
 		};
 
 	for ( key in fieldMap ) {
@@ -1585,7 +1667,7 @@ ve.init.mw.ArticleTarget.prototype.getSaveOptions = function () {
  *  - {boolean} watch Watch the page
  * @param {boolean} [isRetry=false] Whether this is a retry after a 'badtoken' error
  * @return {boolean} Saving has been started
-*/
+ */
 ve.init.mw.ArticleTarget.prototype.save = function ( doc, options, isRetry ) {
 	var data;
 	// Prevent duplicate requests
@@ -1648,7 +1730,7 @@ ve.init.mw.ArticleTarget.prototype.clearDiff = function () {
  * @return {jQuery.Promise} Promise which resolves with the wikitext diff, or rejects with an error
  * @fires showChanges
  * @fires showChangesError
-*/
+ */
 ve.init.mw.ArticleTarget.prototype.getWikitextDiffPromise = function ( doc ) {
 	var target = this;
 	if ( !this.wikitextDiffPromise ) {
@@ -1694,7 +1776,7 @@ ve.init.mw.ArticleTarget.prototype.getWikitextDiffPromise = function ( doc ) {
  * @param {Object} fields Other form fields to add (e.g. wpSummary, wpWatchthis, etc.). To actually
  *  save the wikitext, add { wpSave: 1 }. To go to the diff view, add { wpDiff: 1 }.
  * @return {boolean} Submitting has been started
-*/
+ */
 ve.init.mw.ArticleTarget.prototype.submit = function ( wikitext, fields ) {
 	var key, $form, params;
 
@@ -1741,7 +1823,7 @@ ve.init.mw.ArticleTarget.prototype.submit = function ( wikitext, fields ) {
  * @param {HTMLDocument} doc Document to serialize
  * @param {Function} callback Function to call when complete, accepts error and wikitext arguments
  * @return {boolean} Serializing has been started
-*/
+ */
 ve.init.mw.ArticleTarget.prototype.serialize = function ( doc, callback ) {
 	// Prevent duplicate requests
 	if ( this.serializing ) {
@@ -1986,7 +2068,7 @@ ve.init.mw.ArticleTarget.prototype.restoreEditSection = function () {
 			$documentNode = surfaceView.getDocument().getDocumentNode().$element;
 			// Find all headings including those inside templates, not just HeadingNodes
 			$section = $documentNode.find( 'h1, h2, h3, h4, h5, h6' )
-				// Ignore headings inside TOC
+			// Ignore headings inside TOC
 				.filter( function () {
 					return $( this ).closest( '.ve-ui-mwTocWidget' ).length === 0;
 				} )
@@ -2011,13 +2093,13 @@ ve.init.mw.ArticleTarget.prototype.restoreEditSection = function () {
 				false,
 				surface.getModel().getDocument().getDocumentNode().children[ 0 ].getRange()
 			)
-				// Extract the title
+			// Extract the title
 				.replace( /^\s*=+\s*(.*?)\s*=+\s*$/, '$1' )
-				// Remove links
+			// Remove links
 				.replace( /\[\[:?([^[|]+)\|([^[]+)\]\]/, '$2' )
 				.replace( /\[\[:?([^[]+)\|?\]\]/, '$1' )
 				.replace( new RegExp( '\\[(?:' + ve.init.platform.getUnanchoredExternalLinkUrlProtocolsRegExp().source + ')([^ ]+?) ([^\\[]+)\\]', 'i' ), '$3' )
-				// Cheap HTML removal
+			// Cheap HTML removal
 				.replace( /<[^>]+?>/g, '' )
 			;
 		}
