@@ -892,6 +892,7 @@ class VisualEditorHooks {
 	 * @return bool Always true
 	 */
 	public static function onResourceLoaderGetConfigVars( array &$vars ) {
+		global $wgReCaptchaSiteKey;
 		$coreConfig = RequestContext::getMain()->getConfig();
 		$defaultUserOptions = $coreConfig->get( 'DefaultUserOptions' );
 		$thumbLimits = $coreConfig->get( 'ThumbLimits' );
@@ -940,7 +941,7 @@ class VisualEditorHooks {
 			'fullRestbaseUrl' => $coreConfig->get( 'VisualEditorFullRestbaseURL' ),
 			'feedbackApiUrl' => $veConfig->get( 'VisualEditorFeedbackAPIURL' ),
 			'feedbackTitle' => $veConfig->get( 'VisualEditorFeedbackTitle' ),
-			'sourceFeedbackTitle' => $veConfig->get( 'VisualEditorSourceFeedbackTitle' ),
+			'reCaptchaSiteKey'=> $wgReCaptchaSiteKey,
 		];
 
 		return true;

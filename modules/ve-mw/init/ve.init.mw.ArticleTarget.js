@@ -773,6 +773,11 @@ ve.init.mw.ArticleTarget.prototype.saveFail = function ( doc, saveData, wasRetry
 		return;
 	}
 
+	if ( editApi && editApi.captcha && editApi.captcha.type === 'recaptchanocaptcha' ) {
+		this.saveErrorRecaptcha( editApi );
+		return;
+	}
+
 	// Handle (other) unknown and/or unrecoverable errors
 	this.saveErrorUnknown( editApi, data );
 };
@@ -933,8 +938,10 @@ ve.init.mw.ArticleTarget.prototype.saveErrorCaptcha = function ( editApi ) {
 	} );
 
 	this.captcha = {
-		input: captchaInput,
-		id: captchaData.id
+		id: captchaData.id,
+		getValue: function () {
+			return captchaInput.getValue();
+		}
 	};
 	$captchaDiv.append( $captchaParagraph );
 	$captchaParagraph.append(
@@ -994,6 +1001,44 @@ ve.init.mw.ArticleTarget.prototype.saveErrorCaptcha = function ( editApi ) {
 	this.saveDialog.popPending();
 
 	this.emit( 'saveErrorCaptcha' );
+};
+
+ve.init.mw.ArticleTarget.prototype.saveErrorRecaptcha = function () {
+	var target = this,
+		captchaId = '#g-recaptcha-response',
+		containerId = 've-recaptcha-response',
+		siteKey = mw.config.get( 'wgVisualEditorConfig' ).reCaptchaSiteKey,
+		script = '<script src="https://www.google.com/recaptcha/api.js?onload=onRecaptchaLoadCallback&render=explicit"></script>',
+		$div = $( '<div>' );
+
+	$div.attr( 'id', containerId );
+
+	function onRecaptchaLoadCallback() {
+		target.saveDialog.showMessage( 'api-save-error', $div );
+
+		window.grecaptcha.render( containerId, {
+			sitekey: siteKey,
+			callback: function () {
+				target.captcha = {
+					id: captchaId,
+					getValue: function () {
+						return $( captchaId ).val();
+					}
+				};
+
+				target.saveDialog.executeAction( 'save' );
+			},
+			'expired-callback': function () {},
+			'error-callback': function () {}
+		} );
+
+		target.saveDialog.updateSize();
+		target.emit( 'saveErrorCaptcha' );
+	}
+
+	window.onRecaptchaLoadCallback = onRecaptchaLoadCallback;
+	//mw.loader.load( script );
+	$( document.head ).append( script );
 };
 
 /**
@@ -1660,7 +1705,7 @@ ve.init.mw.ArticleTarget.prototype.getSaveFields = function () {
 		fields = {
 			wpSummary: this.saveDialog ? this.saveDialog.editSummaryInput.getValue() : ( this.editSummaryValue || this.initialEditSummary ),
 			wpCaptchaId: this.captcha && this.captcha.id,
-			wpCaptchaWord: this.captcha && this.captcha.input.getValue()
+			wpCaptchaWord: this.captcha && this.captcha.getValue()
 		};
 	if ( this.recreating ) {
 		fields.wpRecreate = true;
@@ -1699,7 +1744,7 @@ ve.init.mw.ArticleTarget.prototype.getSaveOptions = function () {
 			wpMinoredit: 'minor',
 			wpWatchthis: 'watch',
 			wpCaptchaId: 'captchaid',
-			wpCaptchaWord: 'captchaword'
+			wpCaptchaWord: this.captcha && this.captcha.id.indexOf('recaptcha') !== -1 ? 'g-recaptcha-response' : 'captchaword',
 		};
 
 	for ( key in fieldMap ) {
